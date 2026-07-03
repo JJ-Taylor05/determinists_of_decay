@@ -6,7 +6,11 @@ Calculate per-region differential sum-of-bits scores using ORF boundaries
 derived from a FASTA file to separate motif hits into 5'UTR, CDS, and 3'UTR.
 
 Produces three output TSV files (one per region), each with the same column
-structure as sum_of_bits_combined.py.
+structure as sum_of_bits_combined.py. Outputs are organised by region, and 
+any subsequent runs of this script will add their files to the appropriate
+output directory. Also produces a CSV containing the boundaries of each 
+region identified in each transcript. This will be upserted on subsequent 
+runs of the script. 
 
 Can be combined with streme.xml filters so only statistically significant
 motifs contribute to regional scores.
@@ -17,12 +21,20 @@ Usage (no streme filters)
         --stable   stable_best_site.narrowPeak \\
         --unstable unstable_best_site.narrowPeak \\
         --fasta    transcripts.fa \\
-        --output   regional_scores
+        --output   q1 \\
+        --outdir   regional_summed_scores
 
     # Produces:
-    #   regional_scores_utr5.tsv
-    #   regional_scores_cds.tsv
-    #   regional_scores_utr3.tsv
+    #   regional_summed_scores/utr5/q1_utr5.tsv
+    #   regional_summed_scores/cds/q1_cds.tsv
+    #   regional_summed_scores/utr3/q1_utr3.tsv
+    #   regional_summed_scores/boundaries/boundaries.csv   (shared, upserted)
+
+    # Re-running with --output q2 will produce:
+    #   regional_summed_scores/utr5/q2_utr5.tsv
+    #   regional_summed_scores/cds/q2_cds.tsv
+    #   regional_summed_scores/utr3/q2_utr3.tsv
+    #   The boundaries.csv file will be updated with any new transcripts found in q2.
 
 Usage (with E-value filter)
 ---------------------------
@@ -30,7 +42,8 @@ Usage (with E-value filter)
         --stable   stable_best_site.narrowPeak \\
         --unstable unstable_best_site.narrowPeak \\
         --fasta    transcripts.fa \\
-        --output   regional_scores \\
+        --output   q1 \\
+        --outdir  regional_summed_scores \\
         --streme-xml streme_out/streme.xml \\
         --evalue 0.05
 """
@@ -47,6 +60,8 @@ from filters.streme_filters import (
 )
 from filters.solo_motif import filter_by_motif_name
 from filters.region_filter import (
+    compute_region_boundaries,
+    write_region_boundaries_csv,
     partition_hits_by_region,
     read_best_site_for_region,
 )
@@ -71,7 +86,19 @@ def parse_args():
                    help="FASTA file of transcript sequences (for ORF finding)")
     p.add_argument("-o", "--output",   required=True,
                    help="Output prefix (e.g. 'results' → results/results_utr5.tsv etc.)")
-
+    p.add_argument("-o", "--outdir",   required=True,
+                   help=(
+                        "Label for this run, used as the filename prefix "
+                        "e.g. 'q1' → q1_utr5.tsv etc. "
+                        "Distinguish repeated runs of the script by using a different " 
+                        "label each time (1 per quantile)"
+                   ))
+    p.add_argument("--outdir", default=".",
+                     help=(
+                        "Parent directory for regional subdirectories (utr5/, cds/, utr3/) " 
+                        "and boundaries/), created if it doesn't exist and then reused on "
+                        "subsequent runs. Default: current working directory."
+                     ))
     p.add_argument("--streme-xml", default=None,
                    help="Path to streme.xml (required for --evalue, --pvalue, --min-sites)")
     p.add_argument("--evalue",    type=float, default=None)
@@ -84,7 +111,7 @@ def parse_args():
 
 
 # ---------------------------------------------------------------------------
-# BUILD MOTIF ALLOWLIST  (same logic as sum_of_bits_combined.py)
+# BUILD MOTIF ALLOWLIST 
 # ---------------------------------------------------------------------------
 
 def build_allowed_motifs(args):
@@ -121,7 +148,7 @@ def build_allowed_motifs(args):
 
 
 # ---------------------------------------------------------------------------
-# OUTPUT  (same format as sum_of_bits_combined.py, labelled by region)
+# OUTPUT 
 # ---------------------------------------------------------------------------
 
 def write_output(out_path, region_label, all_seq_ids,
@@ -165,14 +192,31 @@ def main():
         if not Path(p).exists():
             sys.exit(f"ERROR: Input file not found: {p}")
 
-    # Create the output directory (named after the prefix) if it doesn't exist.
-    # parents=True allows nested paths like "results/run1"; exist_ok=True means
-    # re-running the script won't raise an error if the directory is already there.
-    out_dir = Path(args.output)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {out_dir}/")
+    # Create regional output directories (plus boundaries/) if it doesn't exist.
+    # These are created on initial run of this script (parents=True, exist_ok=True)  
+    # and are reused on subsequent runs. The boundaries/ directory is shared across 
+    # all runs of the script.
+    out_dir = Path(args.outdir)
+    subdirs = {
+        name: outdir / name
+        for name in ("utr5", "cds", "utr3", "boundaries")
+    }
+    for name, d in subdirs.items():
+        d.mkdir(parents=True, exist_ok=True)
+    print(f"Output directories (created if missing, reused if present):")
+    for name, d in subdirs.items():
+        print(f"  {d}/")
+
 
     allowed_motifs = build_allowed_motifs(args)
+
+    # Compute ORF-derived region boundaries once from the FASTA, then reuse
+    # for both the stable and unstable partitioning (and for the boundaries CSV).
+    print(f"\nComputing region boundaries from FASTA:")
+    region_map = compute_region_boundaries(args.fasta)
+
+    boundaries_csv_path = subdirs["boundaries"] / "boundaries.csv"
+    write_region_boundaries_csv(boundaries_csv_path, region_map)
 
     # Partition hits from BOTH files into regions.
     # partition_hits_by_region returns sets of (seq_id, motif) tuples —
@@ -181,12 +225,12 @@ def main():
 
     print(f"\nPartitioning stable hits by region:")
     s_utr5, s_cds, s_utr3 = partition_hits_by_region(
-        args.stable, args.fasta, allowed_motifs=allowed_motifs
+        args.stable, args.fasta, allowed_motifs=allowed_motifs, region_map=region_map,
     )
 
     print(f"\nPartitioning unstable hits by region:")
     u_utr5, u_cds, u_utr3 = partition_hits_by_region(
-        args.unstable, args.fasta, allowed_motifs=allowed_motifs
+        args.unstable, args.fasta, allowed_motifs=allowed_motifs, region_map=region_map,
     )
 
     # For each region: read scores for hits assigned to that region,
@@ -206,7 +250,7 @@ def main():
         u_scores = compute_sum_of_bits(u_raw)
         all_ids  = set(s_scores) | set(u_scores)
 
-        out_path = out_dir / f"{out_dir.name}_{suffix}.tsv"
+        out_path = subdirs[suffix] / f"{args.output}_{suffix}.tsv"
         write_output(out_path, label, all_ids,
                      s_scores, s_raw, u_scores, u_raw)
 

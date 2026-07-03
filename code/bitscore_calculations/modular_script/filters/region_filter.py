@@ -55,13 +55,14 @@ Usage example
     # ... repeat for cds and utr3, then write_output() three times
 """
 
+import csv
 import sys
 from collections import defaultdict
 from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
-# FASTA PARSER  (adapted from visualise_fimo.py)
+# FASTA PARSER  
 # ---------------------------------------------------------------------------
 # Reads a multi-FASTA file into a dict: { seq_id: sequence_string }
 # The sequence ID is everything after ">" up to the first whitespace,
@@ -86,7 +87,7 @@ def _parse_fasta(path):
 
 
 # ---------------------------------------------------------------------------
-# LONGEST ORF FINDER  (copied from visualise_fimo.py unchanged)
+# LONGEST ORF FINDER  
 # ---------------------------------------------------------------------------
 # Scans all three forward reading frames.
 # Returns (orf_start, orf_end) as 0-based half-open coordinates,
@@ -111,7 +112,7 @@ def _longest_orf(seq):
 
 
 # ---------------------------------------------------------------------------
-# REGION BOUNDARIES  (adapted from visualise_fimo.py)
+# REGION BOUNDARIES  
 # ---------------------------------------------------------------------------
 # Returns a dict of region name → (start, end) 0-based half-open intervals.
 # If no ORF was found, UTR5 and CDS are empty; entire sequence is UTR3.
@@ -127,14 +128,17 @@ def _region_boundaries(seq_len, orf_s, orf_e):
 
 
 # ---------------------------------------------------------------------------
-# HIT CLASSIFIER  (adapted from visualise_fimo.py)
+# HIT CLASSIFIER 
 # ---------------------------------------------------------------------------
 # Assigns a hit to the region it overlaps most.
 # Returns "utr5", "cds", "utr3", or "unclassified".
 
+_REGION_NAMES = ("utr5", "cds", "utr3")
+
 def _classify(hit_s, hit_e, regions):
     best, best_ov = "unclassified", 0
-    for name, (r0, r1) in regions.items():
+    for name in _REGION_NAMES:
+        r0, r1 = regions[name]
         ov = max(0, min(hit_e, r1) - max(hit_s, r0))
         if ov > best_ov:
             best, best_ov = name, ov
@@ -142,7 +146,7 @@ def _classify(hit_s, hit_e, regions):
 
 
 # ---------------------------------------------------------------------------
-# NARROWPEAK HIT READER  (internal helper)
+# NARROWPEAK HIT READER  
 # ---------------------------------------------------------------------------
 # Reads each line of the narrowPeak file and yields a small dict per hit.
 # We need coordinates here (not just the bit score) so we can classify hits,
@@ -184,7 +188,117 @@ def _iter_hits(narrowpeak_path):
 
 
 # ---------------------------------------------------------------------------
-# PUBLIC FUNCTION 1 — partition hits by region
+# PUBLIC FUNCTION 1 — compute region boundaries for each transcript
+# ---------------------------------------------------------------------------
+def compute_region_boundaries(fasta_path):
+    """
+    Compute ORF-derived region boundaries for every sequence in a FASTA.
+
+    Parameters
+    ----------
+    fasta_path : str or Path
+
+    Returns
+    -------
+    region_map : dict[seq_id -> dict[region_name -> (start, end)]]
+        Each region is a 0-based half-open interval.
+        If no ORF is found, UTR5 and CDS are empty; entire sequence is UTR3.
+    """
+    print(f"  Reading FASTA for ORF boundaries: {fasta_path}")
+    seqs = _parse_fasta(fasta_path)
+
+    region_map = {}
+    no_orf = 0
+    for seq_id, seq in seqs.items():
+        orf_s, orf_e = _longest_orf(seq)
+        if orf_s is None:
+            no_orf += 1
+        boundaries = _region_boundaries(len(seq), orf_s, orf_e)
+        boundaries["seq_len"] = len(seq)
+        boundaries["has_orf"] = orf_s is not None
+        region_map[seq_id] = boundaries
+
+    print(
+        f"  {len(seqs):,} sequences in FASTA; "
+        f"{no_orf:,} had no detectable ORF (entire sequence treated as 3'UTR)"
+    )
+    return region_map
+
+# ---------------------------------------------------------------------------
+# PUBLIC FUNCTION 2 — write region boundaries CSV (upsert)
+# ---------------------------------------------------------------------------
+# Upsert into a single shared CSV: if out_path already exists, its rows are
+# read in first. Any sequence_id in the new region_map that already exists is 
+# overwritten; any new sequence_id is appended. This allows multiple runs of the
+# script to share a single boundaries.csv file.
+
+def write_region_boundaries_csv(out_path, region_map):
+    """
+    Upsert per-transcript region boundaries into a CSV file.
+
+    Parameters
+    ----------
+    region_map : dict[seq_id -> dict]
+        Output of compute_region_boundaries().
+    out_path : str or Path
+        If this file already exists, its existing rows are preserved and merged
+        with region map. Any seq_id in region_map overwrites the existing row.
+    """
+    fieldnames = [
+        "sequence_id", "seq_len", "has_orf",
+        "utr5_start", "utr5_end", "utr5_len"
+        "cds_start", "cds_end", "cds_len",
+        "utr3_start", "utr3_end", "utr3_len"
+    ]
+
+    out_path = Path(out_path)
+
+    existing_rows = {}
+    if out_path.exists():
+        with open(out_path, newline="") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                existing_rows[row["sequence_id"]] = row
+
+    n_new = 0
+    n_overwritten = 0
+    for seq_id, b in region_map.items():
+        u5_s, u5_e = b["utr5"]
+        cds_s, cds_e = b["cds"]
+        u3_s, u3_e = b["utr3"]
+        row = {
+            "sequence_id": seq_id,
+            "seq_len": b["seq_len"],
+            "has_orf": b["has_orf"],
+            "utr5_start": u5_s, "utr5_end": u5_e,
+            "utr5_len": u5_e - u5_s,
+            "cds_start": cds_s, "cds_end": cds_e,
+            "cds_len": cds_e - cds_s,
+            "utr3_start": u3_s, "utr3_end": u3_e,
+            "utr3_len": u3_e - u3_s,
+        }
+        if seq_id in existing_rows:
+            print(
+                f"  [INFO] Overwriting existing row for sequence_id '{seq_id}' in {out_path}"
+            )
+            n_overwritten += 1
+        else:
+            n_new += 1
+        existing_rows[seq_id] = row
+
+    with open(out_path, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+        writer.writeheader()
+        for seq_id in sorted(existing_rows):
+            writer.writerow(existing_rows[seq_id])
+
+    print(
+        f" {out_path}: {n_new} new rows, {n_overwritten} overwritten"
+        f" ({len(existing_rows)} total rows)"
+    )
+
+# ---------------------------------------------------------------------------
+# PUBLIC FUNCTION 3 — partition hits by region
 # ---------------------------------------------------------------------------
 # This is the main entry point. It:
 #   1. Parses the FASTA to find ORF boundaries for each sequence.
@@ -196,7 +310,7 @@ def _iter_hits(narrowpeak_path):
 # streme_filters allowlist — only hits whose motif is in allowed_motifs AND
 # whose coordinates fall in the target region are included.
 
-def partition_hits_by_region(narrowpeak_path, fasta_path, allowed_motifs=None):
+def partition_hits_by_region(narrowpeak_path, fasta_path, allowed_motifs=None, region_map=None):
     """
     Classify every hit in a narrowPeak file into a transcript region.
 
@@ -207,6 +321,10 @@ def partition_hits_by_region(narrowpeak_path, fasta_path, allowed_motifs=None):
     allowed_motifs  : set[str] or None
         Optional pre-filter. If provided, only motifs in this set are
         considered (e.g. the output of filter_by_evalue()).
+    region_map      : dict[seq_id -> dict] or None
+        Optional pre-computed region boundaries. If not provided, they are
+        computed from the FASTA file. If provided, it must be the output of
+        compute_region_boundaries() and must contain all seq_ids in the narrowPeak.
 
     Returns
     -------
@@ -217,23 +335,8 @@ def partition_hits_by_region(narrowpeak_path, fasta_path, allowed_motifs=None):
         labelled "unclassified" and excluded from all three sets.
     """
     # Step 1 — build ORF boundary lookup from FASTA
-    print(f"  Reading FASTA for ORF boundaries: {fasta_path}")
-    seqs = _parse_fasta(fasta_path)
-
-    # Pre-compute region boundaries for every sequence
-    # { seq_id: {"utr5": (s,e), "cds": (s,e), "utr3": (s,e)} }
-    region_map = {}
-    no_orf = 0
-    for seq_id, seq in seqs.items():
-        orf_s, orf_e = _longest_orf(seq)
-        if orf_s is None:
-            no_orf += 1
-        region_map[seq_id] = _region_boundaries(len(seq), orf_s, orf_e)
-
-    print(
-        f"  {len(seqs):,} sequences in FASTA; "
-        f"{no_orf:,} had no detectable ORF (entire sequence treated as 3'UTR)"
-    )
+    if region_map is None:
+        region_map = compute_region_boundaries(fasta_path)
 
     # Step 2 — read hits and classify
     utr5_hits = set()
@@ -286,7 +389,7 @@ def partition_hits_by_region(narrowpeak_path, fasta_path, allowed_motifs=None):
 
 
 # ---------------------------------------------------------------------------
-# PUBLIC FUNCTION 2 — region-aware narrowPeak reader
+# PUBLIC FUNCTION 4 — region-aware narrowPeak reader
 # ---------------------------------------------------------------------------
 # Standard read_best_site() filters by motif name only. For regional scoring
 # we need to filter by (seq_id, motif_name) pair, because the same motif can
