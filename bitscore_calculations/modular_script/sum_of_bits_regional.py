@@ -85,15 +85,13 @@ def parse_args():
     p.add_argument("-f", "--fasta",    required=True,
                    help="FASTA file of transcript sequences (for ORF finding)")
     p.add_argument("-o", "--output",   required=True,
-                   help="Output prefix (e.g. 'results' → results/results_utr5.tsv etc.)")
-    p.add_argument("-o", "--outdir",   required=True,
                    help=(
                         "Label for this run, used as the filename prefix "
                         "e.g. 'q1' → q1_utr5.tsv etc. "
                         "Distinguish repeated runs of the script by using a different " 
                         "label each time (1 per quantile)"
                    ))
-    p.add_argument("--outdir", default=".",
+    p.add_argument("-d", "--outdir", default=".",
                      help=(
                         "Parent directory for regional subdirectories (utr5/, cds/, utr3/) " 
                         "and boundaries/), created if it doesn't exist and then reused on "
@@ -198,7 +196,7 @@ def main():
     # all runs of the script.
     out_dir = Path(args.outdir)
     subdirs = {
-        name: outdir / name
+        name: out_dir / name
         for name in ("utr5", "cds", "utr3", "boundaries")
     }
     for name, d in subdirs.items():
