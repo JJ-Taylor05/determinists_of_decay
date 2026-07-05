@@ -2,6 +2,10 @@ library(tidyverse)
 library(ranger)
 library(biomaRt)
 
+# Set region to calculate motif weights for
+# Options: "all", "cds", "utr5", "utr3"
+region <- "cds"
+
 # Load in FIMO data
 fimo = read_tsv(c("fimo/stableq1fimo.tsv",
          "fimo/stableq2fimo.tsv",
@@ -14,8 +18,27 @@ fimo = read_tsv(c("fimo/stableq1fimo.tsv",
          "fimo/unstableq4fimo.tsv",
          "fimo/unstableq5fimo.tsv"),
          comment = "#")
+
 # Load degradation spreadsheet
 deg = read_csv("human_halflife_data_sorted.csv")
+
+# Load transcript region boundaries CSV
+boundaries = read_csv("boundaries.csv")
+
+# Filter FIMO hits to select those in chosen region
+if (region != "all") {
+  joined <- fimo %>%
+    inner_join(boundaries, by = c("sequence_name" = "sequence_id")) %>%
+    mutate(hit_mid = (start + stop) / 2)
+  
+  fimo <- switch(region,
+    "cds" = joined %>% filter(hit_mid > cds_start & hit_mid <= cds_end),
+    "utr5" = joined %>% filter(hit_mid > utr5_start & hit_mid <= utr5_end),
+    "utr3" = joined %>% filter(hit_mid > utr3_start & hit_mid <= utr3_end)
+    ) %>%
+    dplyr::select(-hit_mid, -seq_len, -has_orf, -utr5_start, -utr5_end, -utr5_len,
+                  -cds_start, -cds_end, -cds_len, -utr3_start, -utr3_end, -utr3_len)
+}
 
 # Collapse FIMO hits into transcript-motif pair scores
 motif_scores <- fimo %>%
