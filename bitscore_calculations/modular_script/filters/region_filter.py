@@ -220,7 +220,7 @@ def compute_region_boundaries(fasta_path):
 
     print(
         f"  {len(seqs):,} sequences in FASTA; "
-        f"{no_orf:,} had no detectable ORF (entire sequence treated as 3'UTR)"
+        f"{no_orf:,} had no detectable ORF"
     )
     return region_map
 
@@ -246,7 +246,7 @@ def write_region_boundaries_csv(out_path, region_map):
     """
     fieldnames = [
         "sequence_id", "seq_len", "has_orf",
-        "utr5_start", "utr5_end", "utr5_len"
+        "utr5_start", "utr5_end", "utr5_len",
         "cds_start", "cds_end", "cds_len",
         "utr3_start", "utr3_end", "utr3_len"
     ]
@@ -344,6 +344,7 @@ def partition_hits_by_region(narrowpeak_path, fasta_path, allowed_motifs=None, r
     utr3_hits = set()
     n_skipped_fasta  = 0
     n_skipped_motif  = 0
+    n_skipped_no_orf = 0
     n_unclassified   = 0
 
     for hit in _iter_hits(narrowpeak_path):
@@ -358,6 +359,11 @@ def partition_hits_by_region(narrowpeak_path, fasta_path, allowed_motifs=None, r
         # Check seq is in FASTA (needed for ORF boundaries)
         if seq_id not in region_map:
             n_skipped_fasta += 1
+            continue
+
+        # Exclude hits in transcripts with no detectable ORF 
+        if not region_map[seq_id]["has_orf"]:
+            n_skipped_no_orf += 1
             continue
 
         region = _classify(hit["start"], hit["end"], region_map[seq_id])
@@ -378,6 +384,8 @@ def partition_hits_by_region(narrowpeak_path, fasta_path, allowed_motifs=None, r
         )
     if n_skipped_motif:
         print(f"  {n_skipped_motif:,} hits excluded by motif pre-filter.")
+    if n_skipped_no_orf:
+        print(f"  {n_skipped_no_orf:,} hits skipped — no detectable ORF.")
     if n_unclassified:
         print(f"  {n_unclassified:,} hits unclassified (zero-length region or no overlap).")
 
