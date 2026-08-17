@@ -254,20 +254,20 @@ def motif_to_dotbracket(pfm_path, streme_path):
     }
 
 
-def parse_model_weights(weights_path):
+def parse_all_weights(weights_path):
     """
-    Parse a PRIESSTESS_model_weights.tab file. Returns a list of
-    (alphabet_PFM_name, weight) tuples for only the NONZERO entries
-    (i.e. the motifs LASSO actually retained), sorted by |weight| descending.
+    Parse every entry in PRIESSTESS_model_weights.tab -- including the
+    zero-weight ones -- into {alphabet_PFM_name: weight}. Returns {} if
+    the file is missing, so a run can still be processed without it (the
+    weight is purely informational now, not used to decide what to decode).
     """
-    retained = []
+    weights = {}
+    if not os.path.isfile(weights_path):
+        return weights
     for line in open(weights_path):
         name, weight = line.strip().split("\t")
-        weight = float(weight)
-        if weight != 0:
-            retained.append((name, weight))
-    retained.sort(key=lambda pair: abs(pair[1]), reverse=True)
-    return retained
+        weights[name] = float(weight)
+    return weights
 
 
 def discover_alphabet_dirs(priesstess_output_dir):
@@ -285,31 +285,54 @@ def discover_alphabet_dirs(priesstess_output_dir):
     return pfm_lookup
 
 
-def summarize_retained_motifs(weights_path, pfm_lookup=None):
-    """
-    Report which motifs the final logistic regression model kept.
+PFM_FILENAME = re.compile(r"^PFM-(\d+)\.txt$")
 
-    pfm_lookup is optional: a dict mapping the alphabet name portion of each
-    weights.tab entry (e.g. "seq-struct-16") to a (streme_path, pfm_dir)
-    tuple, so that any retained motif you have files for gets fully decoded.
-    Entries with no matching lookup are still reported by name/weight, just
-    without a sequence/structure decode. In practice, build this dict with
-    discover_alphabet_dirs() rather than by hand -- see
-    process_priesstess_output() below.
+
+def discover_pfm_files(alphabet_dir):
     """
-    retained = parse_model_weights(weights_path)
-    if not retained:
-        print("No motifs were retained with nonzero weight in this model.")
-        return []
+    List every PFM-N.txt file in one alphabet directory, sorted numerically
+    by N (so PFM-2 comes before PFM-10). Returns [("PFM-1", full_path), ...].
+    """
+    found = []
+    for filename in os.listdir(alphabet_dir):
+        match = PFM_FILENAME.match(filename)
+        if match:
+            found.append((int(match.group(1)), filename))
+    found.sort()
+    return [(f"PFM-{n}", os.path.join(alphabet_dir, filename)) for n, filename in found]
+
+
+def decode_all_structural_motifs(priesstess_output_dir):
+    """
+    Decode every motif from every STRUCTURAL alphabet folder found in a
+    PRIESSTESS_output directory -- every discovered alphabet except seq-4,
+    which is pure sequence and never has a structure to draw.
+
+    This does NOT filter by the final model's weight. A motif can be a
+    real, biologically meaningful structural element even if LASSO
+    assigned it zero weight -- e.g. because a correlated/overlapping motif
+    was kept instead and this one became redundant for prediction, not
+    because it's not a real signal. Weight is still looked up and attached
+    to each result purely as informational context, and is None (printed
+    as "not in weights file") if PRIESSTESS_model_weights.tab is missing
+    or has no entry for that motif.
+    """
+    pfm_lookup = discover_alphabet_dirs(priesstess_output_dir)
+    pfm_lookup.pop("seq-4", None)  # sequence-only: skip on purpose, no structure to draw
+
+    weights_path = os.path.join(priesstess_output_dir, "PRIESSTESS_model_weights.tab")
+    weights = parse_all_weights(weights_path)
+
+    print(f"Structural alphabet folders: {', '.join(pfm_lookup) or '(none)'}")
+    print()
 
     results = []
-    for name, weight in retained:
-        alphabet_name, pfm_id = name.rsplit("_", 1)  # e.g. "seq-struct-16", "PFM-2"
-        print(f"{name}  (weight={weight:.4f})")
-
-        if pfm_lookup and alphabet_name in pfm_lookup:
-            streme_path, pfm_dir = pfm_lookup[alphabet_name]
-            pfm_path = f"{pfm_dir}/{pfm_id}.txt"
+    for alphabet_name, (streme_path, alphabet_dir) in pfm_lookup.items():
+        for pfm_id, pfm_path in discover_pfm_files(alphabet_dir):
+            name = f"{alphabet_name}_{pfm_id}"
+            weight = weights.get(name)
+            weight_display = f"{weight:.4f}" if weight is not None else "not in weights file"
+            print(f"{name}  (weight={weight_display})")
             try:
                 decoded = motif_to_dotbracket(pfm_path, streme_path)
                 print(f"   sequence:    {decoded['sequence']}")
@@ -317,13 +340,18 @@ def summarize_retained_motifs(weights_path, pfm_lookup=None):
                 for w in decoded["warnings"]:
                     print(f"   note: {w}")
                 results.append({"name": name, "weight": weight, **decoded})
-            except FileNotFoundError:
-                print(f"   (PFM file not found at {pfm_path} -- skipped)")
-        else:
-            print("   (no streme.txt/PFM directory supplied for this alphabet -- skipped)")
-        print()
+            except Exception as e:
+                print(f"   (could not decode {pfm_path}: {e})")
+            print()
 
+    # sort so motifs with a known weight come first (highest first), then
+    # everything else -- just for readability, doesn't affect what's included
+    results.sort(key=lambda r: (r["weight"] is None, -(r["weight"] or 0)))
     return results
+
+
+def _format_weight(weight):
+    return f"{weight:.4f}" if weight is not None else "N/A"
 
 
 def write_dotbracket_file(results, output_path):
@@ -349,7 +377,7 @@ def write_dotbracket_file(results, output_path):
     resolved = [r for r in results if "x" not in r["dot_bracket"]]
     with open(output_path, "w") as f:
         for result in resolved:
-            header = f">{result['name']} weight={result['weight']:.4f}"
+            header = f">{result['name']} weight={_format_weight(result['weight'])}"
             if result["warnings"]:
                 header += "  NOTE: " + " | ".join(result["warnings"])
             f.write(header + "\n")
@@ -382,7 +410,7 @@ def write_unresolved_file(results, output_path):
             "# complement (a likely stem partner).\n\n"
         )
         for result in unresolved:
-            f.write(f">{result['name']} weight={result['weight']:.4f}\n")
+            f.write(f">{result['name']} weight={_format_weight(result['weight'])}\n")
             f.write(result["sequence"] + "\n")
             f.write(result["dot_bracket"] + "  (x = paired, side unknown)\n\n")
     return output_path, unresolved
@@ -391,26 +419,24 @@ def write_unresolved_file(results, output_path):
 def process_priesstess_output(priesstess_output_dir):
     """
     The main entry point for a real run: point this at a PRIESSTESS_output
-    directory and it finds the weights file, discovers whichever alphabet
-    subfolders are present, decodes every retained motif it can, prints a
-    summary to the terminal as before, and saves the results into TWO
-    files in that same output directory:
+    directory and it decodes every motif from every structural alphabet
+    folder found there (skipping seq-4, see decode_all_structural_motifs),
+    prints a summary to the terminal, and saves the results into TWO files
+    in that same output directory:
 
       PRIESSTESS_dotbracket_structures.dbn    -- fully resolved, ready
                                                    to visualize as-is
       PRIESSTESS_dotbracket_UNRESOLVED.txt    -- ambiguous-paired motifs
                                                    that need manual review
                                                    before visualizing
-    """
-    weights_path = os.path.join(priesstess_output_dir, "PRIESSTESS_model_weights.tab")
-    pfm_lookup = discover_alphabet_dirs(priesstess_output_dir)
-    print(f"Found alphabet folders: {', '.join(pfm_lookup) or '(none)'}")
-    print()
 
-    results = summarize_retained_motifs(weights_path, pfm_lookup=pfm_lookup)
+    Every structural motif STREME found is included, regardless of the
+    final model's weight for it -- see decode_all_structural_motifs for why.
+    """
+    results = decode_all_structural_motifs(priesstess_output_dir)
 
     if not results:
-        print("Nothing decoded, so no output files were written.")
+        print("No structural motifs found, so no output files were written.")
         return results
 
     dotbracket_path = os.path.join(priesstess_output_dir, "PRIESSTESS_dotbracket_structures.dbn")

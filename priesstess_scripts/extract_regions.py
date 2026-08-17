@@ -7,38 +7,42 @@ stable-vs-unstable mRNA motif search around three landmarks:
   - the CDS end (stop codon)
   - the 3' UTR end
 
-Design summary (see conversation for the reasoning/citations behind these
-choices):
-  - Every transcript with a called ORF (has_orf == True) is used -- there's
-    no minimum 5'UTR/CDS/3'UTR length filter anymore (see
-    load_orf_transcripts()).
-  - CDS-start and CDS-end windows are +/-100nt, symmetric around the site.
-    The 3'UTR-end window is the last 200nt of the transcript (no downstream
-    sequence exists past the annotated 3' end in a mature mRNA). Windowing
-    around these three landmarks follows the logic in Geisberg et al. 2014
-    (Cell, https://doi.org/10.1016/j.cell.2013.12.026), which mapped
-    stabilizing/destabilizing elements to exactly these positions.
-  - If a transcript's UTR/CDS is too short to fill a window, the missing
-    portion is padded with 'N' at the boundary furthest from the
-    biological site, rather than dropping the transcript (see
-    extract_regions() docstring for why this is safe -- Sample et al. 2019,
-    Nat Biotechnol, doi:10.1038/s41587-019-0164-5; Bailey et al. 2021,
-    Bioinformatics, doi:10.1093/bioinformatics/btab203). A transcript is
-    only dropped if a window's REAL sequence already contains an 'N' (a
-    genuine assembly gap), or if the CSV/FASTA disagree on that
-    transcript's length (a version/isoform mismatch -- see extract_regions()).
-    Note: if a CDS is shorter than 200nt, the cds_start and cds_end windows
-    will overlap each other -- padding doesn't change that.
-  - Within each 200nt region, a 100nt window is slid in 10nt steps,
-    producing 11 sub-windows per site (33 total across the 3 sites), each
-    run through PRIESSTESS separately to localize positional signal.
+Design summary (see conversation for the reasoning behind these choices):
+  - Every transcript with a called ORF (has_orf == True) is used -- see
+    load_orf_transcripts().
+  - Each site gets ONE 100nt window, extracted directly from the transcript
+    with NO padding:
+      - cds_start: 100nt starting AT the start codon, extending into the
+                   CDS. Never touches the 5'UTR, so a short/absent 5'UTR
+                   is no longer a problem at all for this site.
+      - cds_end:   50nt either side of the stop codon.
+      - utr3_end:  the last 100nt of the transcript (entirely upstream --
+                   no sequence exists past the annotated 3' end in a
+                   mature mRNA).
+  - Since there's no padding, a transcript's window at a given site is
+    simply dropped if it doesn't fit (e.g. a CDS shorter than 100nt for
+    cds_start's downstream bound, or a 3'UTR shorter than 50nt for
+    cds_end's downstream bound, or a transcript shorter than 100nt for
+    utr3_end's upstream bound). Sites are extracted independently per
+    transcript, so failing one site doesn't drop that transcript from the
+    other two.
+  - A transcript is dropped entirely (all sites) only if the CSV/FASTA
+    disagree on its length -- a version/isoform mismatch where the
+    coordinates can't be trusted against that sequence at all.
+  - TWO PRIESSTESS runs per site (6 runs total): stable-as-foreground vs
+    unstable-as-background, AND unstable-as-foreground vs
+    stable-as-background. PRIESSTESS's model discriminates foreground FROM
+    background, so a single direction only reveals what's enriched in
+    stable relative to unstable -- running both directions is needed to
+    find motifs enriched in EITHER class.
 
 Usage:
     python3 extract_regions.py \
         --csv transcript_boundaries.csv \
         --stable stable_train.fa \
         --unstable unstable_train.fa \
-        --out priesstess_input
+        --out-stable stable_motifs \
+        --out-unstable unstable_motifs
 """
 
 import argparse
@@ -46,23 +50,28 @@ import csv
 import os
 
 
-SITE_REGION_START = {
-    'cds_start': -100,
-    'cds_end':   -100,
-    'utr3_end':  -200,
-}
+WINDOW_SIZE = 100
+
+
+def site_windows(coords):
+    """Given a transcript's cds_start/cds_end/utr3_end coordinates, return
+    the (start, end) bounds -- in the transcript's own coordinate system --
+    of each site's 100nt window."""
+    return {
+        'cds_start': (coords['cds_start'], coords['cds_start'] + 100),
+        'cds_end':   (coords['cds_end'] - 50, coords['cds_end'] + 50),
+        'utr3_end':  (coords['utr3_end'] - 100, coords['utr3_end']),
+    }
 
 
 def load_orf_transcripts(csv_path):
     """Read transcript_boundaries.csv and keep every transcript with a
     called ORF. Returns {unversioned_id: {cds_start, cds_end, utr3_end, seq_len}}.
 
-    This is no longer a length filter -- earlier versions of this function
-    dropped transcripts with a short 5'UTR/CDS/3'UTR, but extract_regions()
-    now pads any shortfall with 'N' instead of discarding the transcript,
-    so that filtering was only throwing away recoverable data. The one
-    thing padding can't invent is a set of CDS coordinates to build a
-    window around, so has_orf == True is the only requirement left here.
+    Not a length filter -- has_orf == True is the only requirement, since
+    there's no coordinate to build a window around otherwise. Any window
+    that doesn't fit within a given transcript is handled per-site in
+    extract_regions(), not filtered out here.
     """
     orf_transcripts = {}
     with open(csv_path) as f:
@@ -99,74 +108,28 @@ def load_fasta(path):
     return seqs
 
 
-def extract_regions(seq, coords, window_size=200):
-    """Cut the three 200nt windows (cds_start, cds_end, utr3_end) out of a
-    full transcript sequence.
+def extract_regions(seq, coords):
+    """Cut the three 100nt windows (cds_start, cds_end, utr3_end) out of a
+    full transcript sequence, with no padding.
 
-    Previously this returned None (dropping the whole transcript) if a
-    window ran off either end of the sequence. Now it instead PADS the
-    missing part with 'N' so every transcript can still be used.
+    Returns {site_name: 100nt region string or None}. A site is None if its
+    window doesn't fit within this specific transcript (extracted
+    independently per site -- one site failing doesn't affect the others).
 
-    Why this is safe to do here: each window is anchored at a real
-    biological landmark (e.g. cds_start sits at relative position 100
-    within its window), and any shortfall in available sequence always
-    occurs at the far edge of the window -- furthest from that anchor --
-    simply because that's where the real transcript sequence runs out.
-    Padding is therefore automatically confined to the boundary furthest
-    from the site of interest, never the centre. See Sample et al. 2019
-    (Nat Biotechnol, doi:10.1038/s41587-019-0164-5) for the same
-    boundary-padding logic applied to 5' UTRs of varying length, and
-    Bailey et al. 2021 (Bioinformatics, doi:10.1093/bioinformatics/btab203)
-    for STREME's explicit handling of ambiguous 'N' characters without
-    introducing artifacts.
-
-    A transcript is only dropped now if the REAL (non-padded) part of a
-    window already contains an 'N' -- e.g. a genuine sequencing/assembly
-    gap in the source data -- since that's a data-quality issue padding
-    can't fix.
-
-    Returns {site_name: 200nt region (str, possibly N-padded)}, or None
-    if a genuine embedded 'N' was found in the real sequence.
+    Returns None (not a dict) if the CSV/FASTA disagree on this
+    transcript's length -- a version/isoform mismatch means none of the
+    coordinates can be trusted against this sequence at all.
     """
-    cds_start = coords['cds_start']
-    cds_end = coords['cds_end']
-    utr3_end = coords['utr3_end']
-
-    # Sanity check: the boundaries table's seq_len should always equal the
-    # actual FASTA sequence length for this ID, since utr3_end (the CDS/UTR
-    # coordinates' frame of reference) is defined relative to that same
-    # transcript. If they disagree, the FASTA and CSV rows are describing
-    # different transcript versions/isoforms that happen to share an
-    # unversioned ID -- coordinates from one can't be trusted against
-    # sequence from the other, so padding math would be meaningless here.
-    # This is rare (~9 in 2,698 in this dataset) but real, so we drop these
-    # explicitly rather than let padding silently produce garbage.
     if coords['seq_len'] != len(seq):
         return None
 
-    windows = {
-        'cds_start': (cds_start - 100, cds_start + 100),
-        'cds_end':   (cds_end - 100, cds_end + 100),
-        'utr3_end':  (utr3_end - 200, utr3_end),
-    }
-
     regions = {}
-    for site_name, (start, end) in windows.items():
-        # How much of the requested window actually falls within the
-        # transcript, and how much is missing off each end?
-        left_pad = max(0, -start)
-        right_pad = max(0, end - len(seq))
-        real_start = max(0, start)
-        real_end = min(len(seq), end)
-
-        real_seq = seq[real_start:real_end]
-        if 'N' in real_seq.upper():
-            return None  # genuine data-quality gap, not something padding fixes
-
-        region = ('N' * left_pad) + real_seq + ('N' * right_pad)
-        assert len(region) == window_size, (
-            f"{site_name}: built a {len(region)}nt region, expected {window_size}nt"
-        )
+    for site_name, (start, end) in site_windows(coords).items():
+        if start < 0 or end > len(seq):
+            regions[site_name] = None
+            continue
+        region = seq[start:end]
+        assert len(region) == WINDOW_SIZE
         regions[site_name] = region
 
     return regions
@@ -177,76 +140,88 @@ def to_rna(seq):
     return seq.upper().replace('T', 'U')
 
 
-def sliding_windows(region, window=100, step=10):
-    """Yield (extraction_relative_start, subsequence) across a region."""
-    n_windows = (len(region) - window) // step + 1
-    for i in range(n_windows):
-        start = i * step
-        yield start, region[start:start + window]
-
-
-def build_priesstess_inputs(boundaries_csv, stable_fa, unstable_fa, out_dir,
-                             window=100, step=10, min_fg_seqs=1000):
-    """Full pipeline: filter -> load -> extract -> slide -> write fg/bg files.
+def build_priesstess_inputs(boundaries_csv, stable_fa, unstable_fa,
+                             stable_motifs_dir, unstable_motifs_dir,
+                             min_fg_seqs=1000):
+    """Full pipeline: filter -> load -> extract -> write fg/bg files.
 
     min_fg_seqs: PRIESSTESS/STREME needs a minimum number of foreground
-    sequences to run motif discovery reliably. Any site/offset combination
-    whose fg file would contain fewer than min_fg_seqs sequences is skipped
-    entirely (not written), with a warning printed, rather than silently
-    handing PRIESSTESS a file that will just fail later.
+    sequences to run motif discovery reliably. Any site whose fg file would
+    contain fewer than min_fg_seqs sequences is skipped entirely (not
+    written), with a warning printed, rather than silently handing
+    PRIESSTESS a file that will just fail later.
 
-    Output layout:
-        out_dir/<site>/rel_<site_relative_offset>/fg.txt   (stable)
-        out_dir/<site>/rel_<site_relative_offset>/bg.txt   (unstable)
+    Output layout: two independent top-level directories, one per direction
+    of comparison, each containing all 3 sites. PRIESSTESS's model
+    discriminates foreground FROM background, so a single direction only
+    reveals what's enriched in stable relative to unstable -- both
+    directions are run to find motifs enriched in EITHER class:
+        stable_motifs_dir/<site>/fg.txt       -- stable probes (fg)
+        stable_motifs_dir/<site>/bg.txt       -- unstable probes (bg)
+        stable_motifs_dir/<site>/results/     -- empty, ready for PRIESSTESS's -o
+        unstable_motifs_dir/<site>/fg.txt     -- unstable probes (fg)
+        unstable_motifs_dir/<site>/bg.txt     -- stable probes (bg)
+        unstable_motifs_dir/<site>/results/   -- empty, ready for PRIESSTESS's -o
     """
     orf_transcripts = load_orf_transcripts(boundaries_csv)
     stable = load_fasta(stable_fa)
     unstable = load_fasta(unstable_fa)
 
-    collected = {'fg': {}, 'bg': {}}
+    collected = {'stable': {site: [] for site in ('cds_start', 'cds_end', 'utr3_end')},
+                 'unstable': {site: [] for site in ('cds_start', 'cds_end', 'utr3_end')}}
+    n_seq_len_mismatch = 0
+    n_site_out_of_bounds = {'cds_start': 0, 'cds_end': 0, 'utr3_end': 0}
 
-    for class_name, fasta_dict in [('fg', stable), ('bg', unstable)]:
+    for class_name, fasta_dict in [('stable', stable), ('unstable', unstable)]:
         for tid, seq in fasta_dict.items():
             if tid not in orf_transcripts:
                 continue
             regions = extract_regions(seq, orf_transcripts[tid])
             if regions is None:
+                n_seq_len_mismatch += 1
                 continue
-            for site, region_seq in regions.items():
-                collected[class_name].setdefault(site, {})
-                for win_start, subseq in sliding_windows(region_seq, window, step):
-                    offset = SITE_REGION_START[site] + win_start
-                    collected[class_name][site].setdefault(offset, []).append(subseq)
+            for site, region in regions.items():
+                if region is None:
+                    n_site_out_of_bounds[site] += 1
+                    continue
+                collected[class_name][site].append(region)
+
+    print(f"  (dropped {n_seq_len_mismatch} transcripts for CSV/FASTA length mismatch)")
+    for site, n in n_site_out_of_bounds.items():
+        print(f"  (dropped {n} {site} windows for not fitting within their transcript)")
+
+    # Both directions of comparison: (output dir, direction label, fg_class, bg_class)
+    directions = [
+        (stable_motifs_dir, 'stable_motifs', 'stable', 'unstable'),
+        (unstable_motifs_dir, 'unstable_motifs', 'unstable', 'stable'),
+    ]
 
     summary = {}
-    for site in SITE_REGION_START:
-        # Union of offsets seen on either side -- a site could in principle
-        # be entirely absent from one class (e.g. if every bg transcript
-        # happened to fail the seq_len/embedded-N checks in extract_regions
-        # for this particular site), so don't assume fg's offsets are a
-        # superset of bg's.
-        all_offsets = set(collected['fg'].get(site, {})) | set(collected['bg'].get(site, {}))
-        for offset in sorted(all_offsets):
-            fg_seqs = collected['fg'].get(site, {}).get(offset, [])
-            bg_seqs = collected['bg'].get(site, {}).get(offset, [])
+    for out_dir, direction_label, fg_class, bg_class in directions:
+        for site in ('cds_start', 'cds_end', 'utr3_end'):
+            fg_seqs = collected[fg_class][site]
+            bg_seqs = collected[bg_class][site]
 
+            key = f"{direction_label}/{site}"
             if not bg_seqs:
-                print(f"  [skip] {site}/rel_{offset}: no background sequences available")
+                print(f"  [skip] {key}: no background sequences available")
                 continue
             if len(fg_seqs) < min_fg_seqs:
-                print(f"  [skip] {site}/rel_{offset}: only {len(fg_seqs)} foreground "
+                print(f"  [skip] {key}: only {len(fg_seqs)} foreground "
                       f"sequences, below min_fg_seqs={min_fg_seqs}")
                 continue
 
-            win_dir = os.path.join(out_dir, site, f"rel_{offset}")
-            os.makedirs(win_dir, exist_ok=True)
+            run_dir = os.path.join(out_dir, site)
+            os.makedirs(run_dir, exist_ok=True)
+            os.makedirs(os.path.join(run_dir, 'results'), exist_ok=True)
 
-            with open(os.path.join(win_dir, 'fg.txt'), 'w') as f:
-                f.write('\n'.join(to_rna(s) for s in fg_seqs) + '\n')
-            with open(os.path.join(win_dir, 'bg.txt'), 'w') as f:
-                f.write('\n'.join(to_rna(s) for s in bg_seqs) + '\n')
+            for role, seqs in [('fg', fg_seqs), ('bg', bg_seqs)]:
+                seq_path = os.path.join(run_dir, f'{role}.txt')
+                with open(seq_path, 'w') as f:
+                    for seq in seqs:
+                        f.write(to_rna(seq) + '\n')
 
-            summary[f"{site}/rel_{offset}"] = (len(fg_seqs), len(bg_seqs))
+            summary[key] = (len(fg_seqs), len(bg_seqs))
 
     return summary
 
@@ -256,24 +231,29 @@ def main():
     parser.add_argument('--csv', required=True, help='transcript_boundaries.csv')
     parser.add_argument('--stable', required=True, help='stable_train.fa')
     parser.add_argument('--unstable', required=True, help='unstable_train.fa')
-    parser.add_argument('--out', required=True, help='output directory for PRIESSTESS input files')
-    parser.add_argument('--window', type=int, default=100, help='sliding sub-window size (default 100)')
-    parser.add_argument('--step', type=int, default=10, help='sliding sub-window step (default 10)')
+    parser.add_argument('--out-stable', required=True,
+                         help='output directory for the stable-vs-unstable comparison '
+                              '(finds motifs enriched in stable mRNAs)')
+    parser.add_argument('--out-unstable', required=True,
+                         help='output directory for the unstable-vs-stable comparison '
+                              '(finds motifs enriched in unstable mRNAs)')
     parser.add_argument('--min-fg-seqs', type=int, default=1000,
                          help='minimum number of foreground sequences required for '
-                              'PRIESSTESS to run; site/window combos below this are '
-                              'skipped (default 1000)')
+                              'PRIESSTESS to run; sites below this are skipped '
+                              '(default 1000)')
     args = parser.parse_args()
 
     summary = build_priesstess_inputs(
-        args.csv, args.stable, args.unstable, args.out,
-        window=args.window, step=args.step, min_fg_seqs=args.min_fg_seqs,
+        args.csv, args.stable, args.unstable,
+        args.out_stable, args.out_unstable,
+        min_fg_seqs=args.min_fg_seqs,
     )
 
-    print(f"Wrote {len(summary)} fg/bg file pairs to {args.out}/")
-    for k in sorted(summary):
-        fg_n, bg_n = summary[k]
-        print(f"  {k}: fg={fg_n}  bg={bg_n}")
+    print(f"Wrote {len(summary)} fg/bg pairs across "
+          f"{args.out_stable}/ and {args.out_unstable}/")
+    for key in sorted(summary):
+        fg_n, bg_n = summary[key]
+        print(f"  {key}: fg={fg_n}  bg={bg_n}")
 
 
 if __name__ == '__main__':
