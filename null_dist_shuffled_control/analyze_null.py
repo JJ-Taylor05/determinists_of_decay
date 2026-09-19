@@ -3,28 +3,22 @@
 Analyze the amplified dinucleotide-shuffle negative control for discriminative
 STREME motif discovery.
 
-Null design: shuffled foreground vs REAL (unshuffled) background, matching
-the real search's direction each time (e.g. shuffled-stable vs real-unstable
-for the stable-direction null). Only the foreground class's dinucleotide
-composition is preserved from the real data each iteration; the background
-class is exactly the real training data STREME sees in the actual search.
+Null design: BOTH classes independently dinucleotide-shuffled (symmetric),
+compared against each other in both directions. Neither side retains any
+real sequence content beyond low-order (dinucleotide) composition.
 
 For each direction (stable, unstable), produces:
   1. A "global null" summary across N null iterations: how many motifs
      passed STREME's E-value threshold and what the best E-value was in
      each null iteration, with your real run's values placed against that
      empirical distribution.
-  2. A per-real-motif empirical p-value: the fraction of the N null
-     iterations in which Tomtom found a significant match to that motif
-     among that iteration's null motifs, then BH-FDR corrected across the
-     direction's motif set.
+  2. A per-real-motif RAW (uncorrected) empirical recurrence rate: the
+     fraction of the N null iterations in which Tomtom found a significant
+     match to that motif among that iteration's null motifs. No FDR/BH
+     correction is applied - see the printed note at the end of the run for
+     why, and treat this as a descriptive robustness indicator alongside
+     your (separately, properly corrected) SEA test-set enrichment result.
 
-Run this after all 01_null_array.sbatch array tasks have finished (handled
-automatically by submit_all.sh via --dependency=afterany).
-
-Usage:
-    python 02_analyze_null.py --project-dir /path/to/streme_null_pipeline \
-                               --data-dir /path/to/data --n-iter 100
 """
 import argparse
 import os
@@ -32,10 +26,11 @@ import re
 from collections import defaultdict
 
 import pandas as pd
-from statsmodels.stats.multitest import multipletests
 
 MOTIF_HEADER_RE = re.compile(r"^MOTIF\s+(\S+)")
 EVALUE_RE = re.compile(r"E=\s*([\d.eE+-]+)")
+# Matches the -evalue -thresh 0.5 flags used in the Tomtom calls in
+# null_array.sbatch.
 TOMTOM_EVALUE_THRESHOLD = 0.5
 
 
@@ -195,32 +190,16 @@ def main():
 
     results_df = pd.DataFrame(all_results)
 
-    # BH correction within each direction's motif family separately
-    results_df["bh_qvalue"] = float("nan")
-    for direction in results_df["direction"].unique():
-        mask = results_df["direction"] == direction
-        pvals = results_df.loc[mask, "empirical_p_recurrence"].values
-        _, qvals, _, _ = multipletests(pvals, method="fdr_bh")
-        results_df.loc[mask, "bh_qvalue"] = qvals
-
+    # Raw (uncorrected) recurrence rate only - no FDR/BH correction.
     results_df["robust_call"] = (
-        (results_df["bh_qvalue"] < 0.05) & (results_df["empirical_p_recurrence"] < 0.05)
-    ).map({True: "PASS (not explained by shuffled null)", False: "FAIL (recurs in null / not significant after FDR)"})
+        results_df["empirical_p_recurrence"] < 0.05
+    ).map({True: "LOW RECURRENCE (uncorrected)", False: "HIGH RECURRENCE (uncorrected)"})
 
     out_csv = os.path.join(out_dir, "motif_robustness_summary.csv")
     results_df.to_csv(out_csv, index=False)
 
     print(f"\n=== Final per-motif table written to {out_csv} ===")
     print(results_df.to_string(index=False))
-    print(
-        "\nNOTE: empirical p-value resolution is limited to 1/n_iter (e.g. 1/100 = 0.01 "
-        "minimum non-zero value) - a motif with 0 null matches gets p=0, which BH treats "
-        "as maximally significant but really just means 'not once in n_iter tries'. "
-        "Consider this when n_iter is small.\n"
-        "Combine this table with your SEA test-set enrichment result: a motif should "
-        "ideally be SEA-significant in the held-out test set AND get a PASS here to be "
-        "reported as a robust discriminative motif."
-    )
 
 
 if __name__ == "__main__":

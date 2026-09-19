@@ -23,25 +23,24 @@ mkdir -p "${OUTDIR}"   # per-iteration output directory - script-made
 
 echo "[$(date)] Iteration ${SEED} starting on $(hostname)"
 
-# --- 1. Dinucleotide-shuffle the FOREGROUND class only, same seed for both ---
-# Background class is left real/unshuffled in each direction.
+# --- 1. Dinucleotide-shuffle, same seed for both ---
 fasta-shuffle-letters -kmer 2 -rna -seed "${SEED}" \
     "${DATA_DIR}/stable_train.fa"   "${OUTDIR}/shuf_stable.fa"
 
 fasta-shuffle-letters -kmer 2 -rna -seed "${SEED}" \
     "${DATA_DIR}/unstable_train.fa" "${OUTDIR}/shuf_unstable.fa"
 
-# --- 2. Discriminative STREME: shuffled foreground vs REAL (unshuffled) background ---
-# stable-direction null: shuffled stable (p) vs real unstable (n)
+# --- 2. Discriminative STREME: shuffled foreground vs shuffled background ---
+# stable-direction null: shuffled stable (p) vs shuffled unstable (n)
 streme --rna --evalue \
     -p "${OUTDIR}/shuf_stable.fa" \
-    -n "${DATA_DIR}/unstable_train.fa" \
+    -n "${OUTDIR}/shuf_unstable.fa" \
     -o "${OUTDIR}/streme_stable_null"
 
-# unstable-direction null: shuffled unstable (p) vs real stable (n)
+# unstable-direction null: shuffled unstable (p) vs shuffled stable (n)
 streme --rna --evalue \
     -p "${OUTDIR}/shuf_unstable.fa" \
-    -n "${DATA_DIR}/stable_train.fa" \
+    -n "${OUTDIR}/shuf_stable.fa" \
     -o "${OUTDIR}/streme_unstable_null"
 
 # --- 3. Tomtom: your REAL motifs (query) vs THIS iteration's null motifs (target) ---

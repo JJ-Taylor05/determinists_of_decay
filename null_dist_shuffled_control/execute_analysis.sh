@@ -7,9 +7,6 @@
 #SBATCH --output=logs/analyze_%j.out
 #SBATCH --error=logs/analyze_%j.err
 
-# ============================================================
-# EDIT THESE TO MATCH 01_null_array.sbatch
-# ============================================================
 PROJECT_DIR="${HOME}/null_dist/streme_null_pipeline"
 DATA_DIR="${PROJECT_DIR}/data"
 CONDA_ENV="meme_suite"
