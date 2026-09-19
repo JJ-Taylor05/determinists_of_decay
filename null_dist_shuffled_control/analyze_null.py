@@ -4,8 +4,9 @@ Analyze the amplified dinucleotide-shuffle negative control for discriminative
 STREME motif discovery.
 
 Null design: BOTH classes independently dinucleotide-shuffled (symmetric),
-compared against each other in both directions. Neither side retains any
-real sequence content beyond low-order (dinucleotide) composition.
+compared against each other in both directions. Unshuffled real background
+FASTA are used for searches to preserve conditions used for discovery of
+motifs.
 
 For each direction (stable, unstable), produces:
   1. A "global null" summary across N null iterations: how many motifs
