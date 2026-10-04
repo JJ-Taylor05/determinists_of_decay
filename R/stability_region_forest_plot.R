@@ -16,7 +16,7 @@ corr_data <- read_excel("plot_data/stab_feature_corrs.xlsx") %>%
   mutate(metric_display = trimws(metric_display))  
 
 # Control display order 
-feature_order <- c("Exon junction density", "MFE", "Length", "GC content", "Motifs")
+feature_order <- c("Exon junction density", "Length", "GC content", "Motifs")
 region_order  <- c("5utr", "cds", "3utr", "mrna")
 region_labels <- c(`5utr` = "5' UTR", cds = "CDS", `3utr` = "3' UTR", mrna = "mRNA")
 
@@ -33,7 +33,6 @@ strip_shade <- data.frame(
 )
 
 # Colour palette 
-# First run devtools::install_github("G-Thomson/Manu") if you do not have the native bird colours package
 kokako <- get_pal("Kokako")
 region_colours <- c(
   "5' UTR" = kokako[5],
@@ -64,7 +63,7 @@ p <- ggplot(corr_data, aes(x = correlation_abs, y = region, colour = region)) +
     axis.text.y = element_blank(), 
     plot.title = element_text(hjust = 1.0),
     legend.position = "bottom",
-    legend.justification = "left",
+    legend.justification = "center",
     legend.location = "plot"
   )
 

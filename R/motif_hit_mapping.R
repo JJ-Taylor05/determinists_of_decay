@@ -8,7 +8,7 @@ library(showtext)
 library(patchwork)
 library(scales)
 
-font_add_google("Arimo", "arimo")
+font_add_google("Arimo", "arial")
 showtext_auto()
 showtext_opts(dpi = 300)
 
@@ -71,7 +71,7 @@ region_pct <- region_counts %>%
 p_pct <- ggplot(region_pct, aes(x = motif_label, y = pct, fill = region)) +
   geom_col(width = 0.55) +
   scale_fill_manual(values = region_colours, name = "Region") +
-  labs(x = NULL, y = "Hits (%)", title = "Regional distribution of stable motif hits") +
+  labs(x = NULL, y = "Hits (%)", title = "Regional distribution of unstable motif hits") +
   theme_minimal(base_family = "arimo", base_size = 20) +
   theme(
     axis.text.x = element_text(angle = 30, hjust = 1),
@@ -106,20 +106,23 @@ make_motif_page <- function(mid) {
     scale_fill_manual(values = region_colours, name = "Region") +
     scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) +
     labs(x = "Meta-transcript position", y = "Proportion of hits", title = lbl) +
-    theme_minimal(base_family = "arimo", base_size = 25)
+    theme_minimal(base_family = "arimo", base_size = 30)
   
   n_label <- ggplot() +
     theme_void() +
     annotate(
-      "text", x = 0, y = 0,
-      label = paste0("Total hits = ", nrow(d), " hits"),
-      family = "arimo", size = 5.5, lineheight = 0.9,
+      "text", x = 0.9, y = 0.9,
+      label = str_wrap(paste0("Total hits = ", nrow(d)), width = 12),
+      family = "arimo", size = 10, lineheight = 0.9,
+      hjust = 1, vjust = 1,
       colour = "grey20"
-    )
+    ) +
+    scale_x_continuous(limits = c(0, 1)) +
+    scale_y_continuous(limits = c(0, 1))
   
   p_hist + inset_element(
     n_label,
-    left = 0.82, bottom = 0.90, right = 1.0, top = 1.0,
+    left = 0.78, bottom = 0.7, right = 1.0, top = 1.0,
     align_to = "full"
   )
 }

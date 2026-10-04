@@ -1,5 +1,4 @@
 library(tidyverse)
-library(Manu)
 library(sysfonts)
 library(showtext)
 
@@ -7,8 +6,6 @@ library(showtext)
 font_add_google("Arimo", "arimo")
 showtext_auto()
 showtext_opts(dpi = 300)
-
-kokako <- get_pal("Kokako")
 
 # --- Config: each file's full path and its region label ---------------------
 # Update these paths to wherever each CSV actually lives.
@@ -53,12 +50,12 @@ top20 <- combined %>%
 
 # --- Plot (styled to match var_imp_plot in randomforest.R) -------------------
 top20_plot <- ggplot(top20, aes(x = reorder(plot_label, importance), y = importance)) +
-  geom_col(fill = kokako[3]) +
+  geom_col(fill = "#BAB4D8") +
   coord_flip() +
   labs(title = "Top 20 Motif Importances Across All Regions",
        x = "Motifs", y = "Importance") +
-  theme_minimal(base_family = "arimo", base_size = 16) +
-  theme(plot.title = element_text(hjust = 2.0))
+  theme_minimal(base_family = "arimo", base_size = 20) +
+  theme(plot.title = element_text(hjust = 0.5))
 
 top20_plot
-ggsave("top20_motif_importance_plot.png", top20_plot, width = 7, height = 6)
+ggsave("top20_motif_importance_plot.png", top20_plot, width = 10, height = 6)
