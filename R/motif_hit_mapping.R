@@ -49,11 +49,64 @@ region_counts <- hits %>%
   count(motif_label, region, name = "n_hits") %>%
   complete(motif_label, region, fill = list(n_hits = 0))
 
+
+set.seed(1)      # makes the random control reproducible
+n_sim <- 5000    # number of random "worlds" to simulate
+
+# Helper functions
+hits <- hits %>%
+  mutate(
+    motif_num = as.integer(factor(motif_label)),               # motif -> 1..n
+    group_num = as.integer(factor(paste(seq_id, motif_id)))    # one id per (transcript, motif) pair
+  )
+motif_names <- levels(factor(hits$motif_label))
+n_motifs    <- length(motif_names)
+n_groups    <- max(hits$group_num)
+n_slots     <- n_motifs * 3     # one slot per motif x region
+
+# Random simulation
+null_counts <- matrix(0L, nrow = n_sim, ncol = n_slots)
+
+for (i in seq_len(n_sim)) {
+  shift      <- runif(n_groups)[hits$group_num] * hits$seq_len        # one random shift per (transcript, motif)
+  new_centre <- (hits$hit_centre + shift) %% hits$seq_len             # slide hits round the transcript
+  new_region <- 1L + (new_centre >= hits$orf_start) + (new_centre >= hits$orf_end)  # 1 = 5' UTR, 2 = CDS, 3 = 3' UTR
+  null_counts[i, ] <- tabulate((hits$motif_num - 1L) * 3L + new_region, nbins = n_slots)
+}
+
+# Random summarize
+null_summary <- tibble(
+  motif_label = rep(motif_names, each = 3),
+  region      = factor(rep(region_levels, times = n_motifs), levels = region_levels),
+  exp_mean    = colMeans(null_counts),
+  exp_lo      = apply(null_counts, 2, quantile, probs = 0.025),
+  exp_hi      = apply(null_counts, 2, quantile, probs = 0.975)
+) %>%
+  left_join(region_counts, by = c("motif_label", "region")) %>%
+  mutate(
+    p_high  = (colSums(sweep(null_counts, 2, n_hits, ">=")) + 1) / (n_sim + 1),
+    p_low   = (colSums(sweep(null_counts, 2, n_hits, "<=")) + 1) / (n_sim + 1),
+    p_value = pmin(1, 2 * pmin(p_high, p_low)),
+    p_adj   = p.adjust(p_value, method = "BH"),
+    log2_obs_vs_exp = log2((n_hits + 0.5) / (exp_mean + 0.5))
+  )
+
+# Plot
 p_counts <- ggplot(region_counts, aes(x = motif_label, y = n_hits, fill = region)) +
   geom_col(position = position_dodge(width = 0.7), width = 0.65) +
+  geom_linerange(data = null_summary,
+                 aes(y = exp_mean, ymin = pmax(exp_lo, 0.5), ymax = exp_hi),
+                 position = position_dodge(width = 0.7), colour = "black", linewidth = 0.4) +
+  geom_errorbar(data = null_summary,
+                aes(y = exp_mean, ymin = exp_mean, ymax = exp_mean),
+                position = position_dodge(width = 0.7), width = 0.65,
+                colour = "black", linewidth = 0.5) +
   scale_fill_manual(values = region_colours, name = "Region") +
   scale_y_log10(labels = scales::trans_format("log10", scales::math_format(10^.x))) +
-  labs(x = "Motifs enriched in unstable mRNA", y = "Number of hits (log10)", title = "Hit counts per region for motifs enriched in unstable mRNA") +
+  labs(x = "Motifs enriched in unstable mRNA",
+       y = expression("Number of hits (log"[10]*")"),
+       title = "Hit counts per region for motifs enriched in unstable mRNA",
+       caption = "Black tick = mean expected hits under random placement; black line = 95% interval (5,000 simulations)") +
   theme_minimal(base_family = "arimo", base_size = 20) +
   theme(
     axis.text.x = element_text(angle = 30, hjust = 1),
@@ -133,7 +186,7 @@ motif_pages <- map(motif_ids, make_motif_page)
 motif_pages[1]
 
 # Create output directory
-out_dir <- "unstable_motifmapping_plots"
+out_dir <- "plots/unstable_motifmapping_plots"
 dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
 
 # Save the two summary plots

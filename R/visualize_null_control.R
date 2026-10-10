@@ -18,7 +18,7 @@ null_stable <- read_csv("plot_data/global_null_stable.csv")
 null_unstable <- read_csv("plot_data/global_null_unstable.csv")
 
 # Make output directory
-output_dir <- "null_control_plots_realback"
+output_dir <- "plots/null_control_plots"
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
 ## Plotting functions
@@ -42,12 +42,12 @@ make_recurrence_plot <- function(df, direction_label, bar_colour) {
           panel.grid.minor = element_blank())
 }
 
-stable_recurrence_plot <- make_recurrence_plot(summary_df, "stable", "lavender")
+stable_recurrence_plot <- make_recurrence_plot(summary_df, "stable", "chocolate3")
 stable_recurrence_plot
 ggsave(file.path(output_dir, "motif_recurrence_rates_stable.png"), stable_recurrence_plot,
        width = 9, height = 7)
 
-unstable_recurrence_plot <- make_recurrence_plot(summary_df, "unstable", "purple4")
+unstable_recurrence_plot <- make_recurrence_plot(summary_df, "unstable", "darkorchid4")
 unstable_recurrence_plot
 ggsave(file.path(output_dir, "motif_recurrence_rates_unstable.png"), unstable_recurrence_plot,
        width = 9, height = 7)

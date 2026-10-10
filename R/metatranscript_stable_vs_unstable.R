@@ -9,13 +9,13 @@ showtext_opts(dpi = 300)
 
 region_levels <- c("5' UTR", "CDS", "3' UTR")
 region_colours <- c(
-  "5' UTR" = "grey50",
-  "CDS" = "grey15",
-  "3' UTR" = "grey50"
+  "5' UTR" = "grey70",
+  "CDS" = "grey30",
+  "3' UTR" = "grey70"
 )
 
-stable_path   <- "plot_data/stable_structure_mapping_hits.tsv"
-unstable_path <- "plot_data/unstable_structure_mapping_hits.tsv"
+stable_path   <- "plot_data/stable_motif_mapping_hits.tsv"
+unstable_path <- "plot_data/unstable_motif_mapping_hits.tsv"
 
 prepare_hits <- function(path) {
   read_tsv(path, na = "NA") %>%
@@ -65,7 +65,7 @@ hits_binned <- bind_rows(
     y = if_else(stability == "Destabilising motifs", -proportion, proportion)
   )
 
-stability_colours <- c("Stabilising motifs" = "mediumpurple3", "Destabilising motifs" = "purple4")
+stability_colours <- c("Stabilising motifs" = "chocolate", "Destabilising motifs" = "darkorchid4")
 y_max <- max(abs(hits_binned$y)) * 1.1
 
 track_gap    <- y_max * 0.15
@@ -123,12 +123,12 @@ p_metatranscript <- ggplot(hits_binned, aes(x = bin_mid, y = y, colour = stabili
   geom_line(linewidth = 0.9) +
   region_label_layer +
   transcript_layer +
-  annotate("text", x = 1/6, y = y_max * 0.55, label = "Stable-associated structure",
+  annotate("text", x = 1/6, y = y_max * 0.55, label = "Stable-class motifs",
            colour = stability_colours[["Stabilising motifs"]],
-           family = "arimo", size = 4) +
-  annotate("text", x = 1/6, y = -y_max * 0.55, label = "Unstable-associated structure",
+           family = "arimo", size = 5) +
+  annotate("text", x = 1/6, y = -y_max * 0.55, label = "Unstable-class motifs",
            colour = stability_colours[["Destabilising motifs"]],
-           family = "arimo", size = 4) +
+           family = "arimo", size = 5) +
   scale_colour_manual(values = stability_colours, name = NULL) +
   scale_fill_manual(values = stability_colours, name = NULL) +
   scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) +
@@ -139,8 +139,8 @@ p_metatranscript <- ggplot(hits_binned, aes(x = bin_mid, y = y, colour = stabili
   ) +
   labs(
     x = "Meta-transcript position",
-    y = "Proportion of transcripts with structure",
-    title = "Meta-transcript distribution of structured regions"
+    y = "Proportion of hits",
+    title = "Meta-transcript distribution of motifs"
   ) +
   theme_minimal(base_family = "arimo", base_size = 20) +
   theme(
@@ -154,6 +154,6 @@ p_metatranscript <- ggplot(hits_binned, aes(x = bin_mid, y = y, colour = stabili
 
 p_metatranscript
 
-ggsave(("metatranscript_stable_vs_unstable_structure.png"), p_metatranscript,
+ggsave(("plots/metatranscript_stable_vs_unstable_motifs.png"), p_metatranscript,
        width = 10, height = 6, dpi = 300, bg = "white")
 

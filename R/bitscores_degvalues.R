@@ -1,0 +1,11 @@
+unweighted.data = read.table("bitscores_unstableset.tsv", sep = "\t", header = TRUE)
+icweighted_data = read.table("bitscores_icweight_unstableset.tsv", sep = "\t", header = TRUE)
+enrichweighted_data = read.table("bitscores_enrichweight_unstableset.tsv", sep = "\t", header = TRUE)
+regweighted_data = read.table("bitscores_regweight_unstableset.tsv", sep = "\t", header = TRUE)
+thresh_data = read.table("bitscores_degvalues_stableset_thresh.tsv", sep = "\t", header = TRUE)
+
+plot(unweighted.data$degradation_value, unweighted.data$sum_of_bits_score)
+plot(icweighted_data$degradation_value, icweighted_data$weighted_score)
+plot(enrichweighted_data$degradation_value, enrichweighted_data$weighted_score)
+plot(regweighted_data$degradation_value, regweighted_data$weighted_score)
+plot(thresh_data$degradation_value, thresh_data$sum_of_bits_score)
